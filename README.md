@@ -11,7 +11,7 @@ When logged in the players can authenticate their Minecraft accounts by entering
 ## Requirements
 
 - Python 3
-- Supports MC 1.15.2+
+- Supports MC 1.16.3+
 - An instance of [gudchalmers/chs-mclink-backend][4] running
 - Python [Virtualenv][3] (not really required but highly recommended)
 
