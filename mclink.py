@@ -10,9 +10,10 @@ import hmac
 import hashlib
 
 import requests
+from quarry.data.data_packs import data_packs, dimension_types
 from quarry.net.server import ServerFactory, ServerProtocol
 from quarry.types.chat import Message
-from quarry.types.nbt import TagByte, TagCompound, TagFloat, TagInt, TagList, TagLong, TagRoot, TagString
+from quarry.types.uuid import UUID
 from twisted.internet import reactor
 from random import seed
 from random import randint
@@ -60,7 +61,8 @@ class RegisterProtocol(ServerProtocol):
                     data = buff.read()
                     buff.pos = pos
 
-                    my_sign = hmac.new(bytes(self.factory.config.get('velocity_key'), 'utf-8'), data, hashlib.sha256).digest()
+                    my_sign = hmac.new(bytes(self.factory.config.get('velocity_key'), 'utf-8'), data,
+                                       hashlib.sha256).digest()
                     if hmac.compare_digest(my_sign, signature):
                         version = buff.unpack_varint()
                         if version != 1:
@@ -82,76 +84,57 @@ class RegisterProtocol(ServerProtocol):
         #   in-game, and does some logging.
         ServerProtocol.player_joined(self)
 
-        if self.protocol_version > 578:  # Minecraft 1.16.1
-            # Send "Join Game" packet
-            dim_name = "minecraft:the_end"
-            dim_codec = TagRoot({
-                '': TagCompound({
-                    "dimension": TagList([
-                        TagCompound({
-                            "name": TagString(dim_name),
-                            "natural": TagByte(0),
-                            "ambient_light": TagFloat(0.0),
-                            "has_ceiling": TagByte(0),
-                            "has_skylight": TagByte(0),
-                            "fixed_time": TagLong(6000),
-                            "shrunk": TagByte(0),
-                            "ultrawarm": TagByte(0),
-                            "has_raids": TagByte(1),
-                            "respawn_anchor_works": TagByte(0),
-                            "bed_works": TagByte(0),
-                            "piglin_safe": TagByte(0),
-                            "logical_height": TagInt(256),
-                            "infiniburn": TagString("minecraft:infiniburn_end"),
-                        }),
-                    ])
-                })
-            })
-            self.send_packet("join_game",
-                             self.buff_type.pack("iBB", 0, 3, 3),  # entity id, game mode, previous game mode
-                             self.buff_type.pack_varint(1),  # world count
-                             self.buff_type.pack_string(dim_name),  # world name(s)
-                             self.buff_type.pack_nbt(dim_codec),  # dimension registry
-                             self.buff_type.pack_string(dim_name),  # dimension
-                             self.buff_type.pack_string(dim_name),  # world name
-                             self.buff_type.pack("qB", 42, 0),  # hashed seed, max players (unused)
-                             self.buff_type.pack_varint(2),  # view distance
-                             self.buff_type.pack("????", True, True, False, True))  # respawn screen, debug world, flat world
-        else:  # Minecraft 1.15
-            # Send "Join Game" packet
-            self.send_packet("join_game",
-                             self.buff_type.pack("iBiqB",
-                                                 0,  # entity id
-                                                 3,  # game mode
-                                                 1,  # dimension
-                                                 0,  # hashed seed
-                                                 0),  # max players
-                             self.buff_type.pack_string("flat"),  # level type
-                             self.buff_type.pack_varint(1),  # view distance
-                             self.buff_type.pack("??",
-                                                 True,  # reduced debug info
-                                                 False))  # show respawn screen
+        # Build up fields for "Join Game" packet
+        entity_id = 0
+        max_players = 0
+        hashed_seed = 42
+        view_distance = 2
+        game_mode = 3
+        prev_game_mode = 3
+        is_hardcore = False
+        is_respawn_screen = True
+        is_reduced_debug = True
+        is_debug = False
+        is_flat = True
+        dimension_count = 1
+        dimension_name = "mclink"
+        dimension_type = dimension_types[754, "minecraft:the_end"]  # Hardcoded 1.16.4 protocol version
+        data_pack = data_packs[754]  # Hardcoded 1.16.4 protocol version
+
+        # Send "Join Game" packet
+        self.send_packet(
+            "join_game",
+            self.buff_type.pack("i?BB", entity_id, is_hardcore, game_mode, prev_game_mode),
+            self.buff_type.pack_varint(dimension_count),  # world count
+            self.buff_type.pack_string(dimension_name),  # world name(s)
+            self.buff_type.pack_nbt(data_pack),  # dimension registry
+            self.buff_type.pack_nbt(dimension_type),  # dimension
+            self.buff_type.pack_string(dimension_name),  # world name
+            self.buff_type.pack("q", hashed_seed),  # hashed seed
+            self.buff_type.pack_varint(max_players),  # max players (unused)
+            self.buff_type.pack_varint(view_distance),  # view distance
+            self.buff_type.pack("????", is_reduced_debug, is_respawn_screen, is_debug, is_flat))
 
         self.send_packet("plugin_message",
                          self.buff_type.pack_string("minecraft:brand"),
                          self.buff_type.pack_string("MCLink"))
 
         # Send "Player Position and Look" packet
-        self.send_packet("player_position_and_look",
-                         self.buff_type.pack("dddff?",
-                                             0,  # x
-                                             255,  # y
-                                             0,  # z
-                                             0,  # yaw
-                                             0,  # pitch
-                                             0b00000),  # flags
-                         self.buff_type.pack_varint(0))  # teleport id
+        self.send_packet(
+            "player_position_and_look",
+            self.buff_type.pack("dddff?",
+                                0,  # x
+                                255,  # y
+                                0,  # z
+                                0,  # yaw
+                                0,  # pitch
+                                0b00000),  # flags
+            self.buff_type.pack_varint(0))  # teleport id
 
         # Start sending "Keep Alive" packets
         self.ticker.add_loop(20, self.update_keep_alive)
 
         self.send_commands()
-
         self.send_packet("title",
                          self.buff_type.pack_varint(3),
                          self.buff_type.pack("iii", 10, 4200, 20))
@@ -180,16 +163,7 @@ class RegisterProtocol(ServerProtocol):
 
     def update_keep_alive(self):
         # Send a "Keep Alive" packet
-
-        # 1.7.x
-        if self.protocol_version <= 338:
-            payload = self.buff_type.pack_varint(0)
-
-        # 1.12.2
-        else:
-            payload = self.buff_type.pack('Q', 0)
-
-        self.send_packet("keep_alive", payload)
+        self.send_packet("keep_alive", self.buff_type.pack('Q', 0))
 
     def packet_chat_message(self, buff):
         msg = buff.unpack_string()
@@ -197,7 +171,8 @@ class RegisterProtocol(ServerProtocol):
         # Handle register commands, email is validated on backend too
         if msg.startswith("/register"):
             if msg.endswith("@student.chalmers.se"):
-                d = send_request("register", {'email': msg.split(" ")[-1], 'uuid': self.uuid.to_hex(), 'name': self.display_name})
+                d = send_request("register",
+                                 {'email': msg.split(" ")[-1], 'uuid': self.uuid.to_hex(), 'name': self.display_name})
                 if 'uuid' in d and d['uuid'][0] == "uuid_taken":
                     if self.valid:
                         self.send_chat(Message(Text.ALREADY_VERIFIED))
@@ -255,11 +230,16 @@ class RegisterProtocol(ServerProtocol):
         else:
             self.send_chat(Message(Text.UNKNOWN_COMMAND))
 
-    def send_chat(self, message):
-        data = self.buff_type.pack_chat(message) + self.buff_type.pack('B', 0)
-        if self.protocol_version > 578:
-            data += self.buff_type.pack_uuid(self.uuid)
-        self.send_packet("chat_message", data)
+    def send_chat(self, message, sender=None):
+        if sender is None:
+            sender = UUID(int=0)
+
+        self.send_packet(
+            "chat_message",
+            self.buff_type.pack_chat(message),
+            self.buff_type.pack('B', 1),
+            self.buff_type.pack_uuid(sender)
+        )
 
     def send_sound(self, name):
         self.send_packet("named_sound_effect",
