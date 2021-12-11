@@ -89,6 +89,7 @@ class RegisterProtocol(ServerProtocol):
         max_players = 0
         hashed_seed = 42
         view_distance = 2
+        simulation_distance = 2
         game_mode = 3
         prev_game_mode = 3
         is_hardcore = False
@@ -98,12 +99,10 @@ class RegisterProtocol(ServerProtocol):
         is_flat = True
         dimension_count = 1
         dimension_name = "mclink"
-        dimension_type = dimension_types[754, "minecraft:the_end"]  # Hardcoded 1.16.4 protocol version
-        data_pack = data_packs[754]  # Hardcoded 1.16.4 protocol version
+        dimension_type = dimension_types[self.protocol_version, "minecraft:the_end"]
+        data_pack = data_packs[self.protocol_version]
 
-        # Send "Join Game" packet
-        self.send_packet(
-            "join_game",
+        join_game = [
             self.buff_type.pack("i?BB", entity_id, is_hardcore, game_mode, prev_game_mode),
             self.buff_type.pack_varint(dimension_count),  # world count
             self.buff_type.pack_string(dimension_name),  # world name(s)
@@ -113,15 +112,22 @@ class RegisterProtocol(ServerProtocol):
             self.buff_type.pack("q", hashed_seed),  # hashed seed
             self.buff_type.pack_varint(max_players),  # max players (unused)
             self.buff_type.pack_varint(view_distance),  # view distance
+        ]
+
+        if self.protocol_version >= 757:  # 1.18
+            join_game.append(self.buff_type.pack_varint(simulation_distance))
+
+        # Send "Join Game" packet
+        self.send_packet(
+            "join_game",
+            *join_game,
             self.buff_type.pack("????", is_reduced_debug, is_respawn_screen, is_debug, is_flat))
 
         self.send_packet("plugin_message",
                          self.buff_type.pack_string("minecraft:brand"),
                          self.buff_type.pack_string("MCLink"))
 
-        # Send "Player Position and Look" packet
-        self.send_packet(
-            "player_position_and_look",
+        pos_look = [
             self.buff_type.pack("dddff?",
                                 0,  # x
                                 255,  # y
@@ -129,15 +135,27 @@ class RegisterProtocol(ServerProtocol):
                                 0,  # yaw
                                 0,  # pitch
                                 0b00000),  # flags
-            self.buff_type.pack_varint(0))  # teleport id
+            self.buff_type.pack_varint(0)  # teleport id
+        ]
+        if self.protocol_version >= 755:  # 1.17+
+            pos_look.append(self.buff_type.pack("?", True))  # Leave vehicle)
+
+        # Send "Player Position and Look" packet
+        self.send_packet(
+            "player_position_and_look",
+            *pos_look)
 
         # Start sending "Keep Alive" packets
         self.ticker.add_loop(20, self.update_keep_alive)
 
         self.send_commands()
-        self.send_packet("title",
-                         self.buff_type.pack_varint(3),
-                         self.buff_type.pack("iii", 10, 4200, 20))
+        if self.protocol_version >= 755:  # 1.17+
+            self.send_packet("set_title_time",
+                             self.buff_type.pack("iii", 10, 4200, 20))
+        else:
+            self.send_packet("title",
+                             self.buff_type.pack_varint(3),
+                             self.buff_type.pack("iii", 10, 4200, 20))
 
         self.send_title()
         self.title_tick = self.ticker.add_loop(4200, self.send_title)
@@ -153,13 +171,20 @@ class RegisterProtocol(ServerProtocol):
         self.send_chat(Message(msg))
 
     def send_title(self):
-        self.send_packet("title",
-                         self.buff_type.pack_varint(0),
-                         self.buff_type.pack_chat(Message(Text.MC_LINK)))
+        if self.protocol_version >= 755:  # 1.17+
+            self.send_packet("set_title_text",
+                             self.buff_type.pack_chat(Message(Text.MC_LINK)))
 
-        self.send_packet("title",
-                         self.buff_type.pack_varint(1),
-                         self.buff_type.pack_chat(Message(Text.LOOK_AT_CHAT)))
+            self.send_packet("set_title_subtitle",
+                             self.buff_type.pack_chat(Message(Text.LOOK_AT_CHAT)))
+        else:
+            self.send_packet("title",
+                             self.buff_type.pack_varint(0),
+                             self.buff_type.pack_chat(Message(Text.MC_LINK)))
+
+            self.send_packet("title",
+                             self.buff_type.pack_varint(1),
+                             self.buff_type.pack_chat(Message(Text.LOOK_AT_CHAT)))
 
     def update_keep_alive(self):
         # Send a "Keep Alive" packet
@@ -237,7 +262,7 @@ class RegisterProtocol(ServerProtocol):
         self.send_packet(
             "chat_message",
             self.buff_type.pack_chat(message),
-            self.buff_type.pack('B', 1),
+            self.buff_type.pack('b', 1),
             self.buff_type.pack_uuid(sender)
         )
 
